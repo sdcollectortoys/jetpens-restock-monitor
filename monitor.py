@@ -47,16 +47,29 @@ def send_pushover_message(msg: str):
         print(f"❌ Pushover error [{resp.status_code}]: {resp.text}")
 
 def is_in_stock(driver, url: str) -> bool:
+    # Use CSS selectors: input.add-to-cart indicates in stock; anchor.cart-button indicates restock notification
     print(f"🔍 Checking {url}")
     driver.get(url)
     time.sleep(5)
+    # In-stock indicator: presence of Add to Cart button
     try:
-        driver.find_element(By.XPATH, "//button[contains(text(),'Get Restock Notification')]")
-        print("🔴 Out of stock")
-        return False
-    except NoSuchElementException:
-        print("🟢 In stock!")
+        driver.find_element(By.CSS_SELECTOR, "input.add-to-cart, button.add-to-cart")
+        print("🟢 In stock (Add to Cart present)")
         return True
+    except NoSuchElementException:
+        pass
+    # Out-of-stock indicator: presence of Get Restock Notification link/button
+    try:
+        driver.find_element(By.CSS_SELECTOR, "a.cart-button, button.cart-button")
+        text = driver.find_element(By.CSS_SELECTOR, "a.cart-button, button.cart-button").text
+        if "Restock Notification" in text:
+            print("🔴 Out of stock (Get Restock Notification present)")
+            return False
+    except NoSuchElementException:
+        pass
+    # No clear indicator: assume out-of-stock
+    print("⚪️ Unknown state; assuming out-of-stock")
+    return False
 
 def monitor_loop():
     chrome_bin        = os.getenv("CHROME_BIN", "/usr/bin/chromium")
@@ -84,14 +97,12 @@ def monitor_loop():
                     if is_in_stock(driver, url):
                         send_pushover_message(f"JetPens restocked!\n{url}")
                 except Exception as e:
-                    print(f"⚠️ Error: {e}")
+                    print(f"⚠️ Error checking {url}: {e}")
             print(f"⏳ Sleeping {CHECK_INTERVAL}s\n")
             time.sleep(CHECK_INTERVAL)
     finally:
         driver.quit()
 
 if __name__ == "__main__":
-    # 1) Start HTTP health check
     threading.Thread(target=start_health_server, daemon=True).start()
-    # 2) Run the monitoring loop
     monitor_loop()
