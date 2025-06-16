@@ -7,6 +7,9 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException, WebDriverException
 
+print("🟢 Starting up... please wait")
+time.sleep(5)
+
 PRODUCT_URLS = [
     "https://www.jetpens.com/Uni-ball-ZENTO-Gel-Pen-Signature-Model-0.5-mm-Metallic-Black-Body-Black-Ink/pd/45351",
     "https://www.jetpens.com/Uni-ball-ZENTO-Gel-Pen-Signature-Model-0.38-mm-Silver-Body-Black-Ink/pd/45350"
@@ -46,6 +49,7 @@ def is_in_stock(driver, url):
         return False
 
 def main():
+    print("🚨 monitor.py is running...")
     print("🟢 JetPens Selenium Monitor started...")
 
     try:
@@ -74,5 +78,4 @@ def main():
         time.sleep(60)
 
 if __name__ == "__main__":
-    print("🚨 monitor.py is running...")
     main()
