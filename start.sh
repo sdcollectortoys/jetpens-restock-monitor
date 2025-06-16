@@ -1,3 +1,2 @@
-#!/bin/bash
-echo "🟢 Container started, launching Python script..."
-python monitor.py
+#!/usr/bin/env bash
+exec python -u monitor.py
