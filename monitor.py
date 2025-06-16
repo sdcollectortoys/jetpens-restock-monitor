@@ -39,28 +39,32 @@ def is_in_stock(driver, url):
         print("✅ In stock!")
         return True
     except WebDriverException as e:
-        print(f"⚠️ WebDriver error: {e}")
+        print(f"⚠️ WebDriver error during stock check: {e}")
         return False
     except Exception as e:
-        print(f"⚠️ Unexpected error checking stock: {e}")
+        print(f"⚠️ Unexpected error during stock check: {e}")
         return False
 
 def main():
     print("🟢 JetPens Selenium Monitor started...")
 
     try:
+        print("🛠️ Setting Chrome options...")
         chrome_options = Options()
         chrome_options.binary_location = "/usr/bin/chromium"
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
 
+        print("🚗 Attempting to launch Chrome WebDriver...")
         driver = webdriver.Chrome(options=chrome_options)
+        print("✅ Chrome WebDriver started successfully.")
     except Exception as e:
         print(f"❌ Failed to start Chrome WebDriver: {e}")
         return
 
     while True:
+        print("🔁 Beginning new check cycle...")
         for url in PRODUCT_URLS:
             try:
                 if is_in_stock(driver, url):
@@ -70,4 +74,5 @@ def main():
         time.sleep(60)
 
 if __name__ == "__main__":
+    print("🚨 monitor.py is running...")
     main()
