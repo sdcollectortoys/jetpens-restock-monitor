@@ -8,7 +8,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.common.exceptions import WebDriverException, NoSuchElementException
+
+# Version 4: simplified detection
 
 # Pushover credentials from environment
 PUSHOVER_USER_KEY   = os.getenv("PUSHOVER_USER_KEY")
@@ -47,28 +49,18 @@ def send_pushover_message(msg: str):
         print(f"❌ Pushover error [{resp.status_code}]: {resp.text}")
 
 def is_in_stock(driver, url: str) -> bool:
-    # Use CSS selectors: input.add-to-cart indicates in stock; anchor.cart-button indicates restock notification
+    # Simplified: in stock if 'Add to Cart' input exists.
     print(f"🔍 Checking {url}")
     driver.get(url)
     time.sleep(5)
-    # In-stock indicator: presence of Add to Cart button
     try:
-        driver.find_element(By.CSS_SELECTOR, "input.add-to-cart, button.add-to-cart")
-        print("🟢 In stock (Add to Cart present)")
-        return True
+        elements = driver.find_elements(By.CSS_SELECTOR, "input.add-to-cart")
+        if elements:
+            print("🟢 In stock (Add to Cart present)")
+            return True
     except NoSuchElementException:
         pass
-    # Out-of-stock indicator: presence of Get Restock Notification link/button
-    try:
-        driver.find_element(By.CSS_SELECTOR, "a.cart-button, button.cart-button")
-        text = driver.find_element(By.CSS_SELECTOR, "a.cart-button, button.cart-button").text
-        if "Restock Notification" in text:
-            print("🔴 Out of stock (Get Restock Notification present)")
-            return False
-    except NoSuchElementException:
-        pass
-    # No clear indicator: assume out-of-stock
-    print("⚪️ Unknown state; assuming out-of-stock")
+    print("🔴 Out of stock (Add to Cart missing)")
     return False
 
 def monitor_loop():
