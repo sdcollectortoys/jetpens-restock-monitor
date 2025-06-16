@@ -42,5 +42,7 @@ COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 
 COPY monitor.py monitor.py
+COPY start.sh start.sh
+RUN chmod +x start.sh
 
-CMD ["python", "monitor.py"]
+CMD ["./start.sh"]
