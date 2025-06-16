@@ -1,0 +1,13 @@
+
+services:
+  - type: worker
+    name: jetpens-monitor
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: "python monitor.py"
+    envVars:
+      - key: PUSHOVER_USER_KEY
+        value: uudubrkch4wecs9nc1m7z8dhiyp3ky
+      - key: PUSHOVER_API_TOKEN
+        value: abjjgic84mkz2b2mdy5gjts9bfs5iy
