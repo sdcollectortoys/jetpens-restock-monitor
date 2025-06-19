@@ -15,13 +15,16 @@ PORT           = int(os.getenv("PORT", "8000"))
 PUSH_KEY       = os.getenv("PUSHOVER_USER_KEY")
 PUSH_TOKEN     = os.getenv("PUSHOVER_API_TOKEN")
 PRODUCT_URLS   = [u.strip() for u in os.getenv("PRODUCT_URLS","").split(",") if u.strip()]
-# XPath or CSS for “add to bag” (case-insensitive)
+
+# NEW DEFAULT: match ANY element containing “add to bag” (case-insensitive)
 STOCK_SELECTOR = os.getenv("STOCK_SELECTOR",
-    "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-    " 'abcdefghijklmnopqrstuvwxyz'), 'add to bag')]"
-).strip()
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # seconds
-PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # seconds
+    "//*[contains(translate(normalize-space(.), "
+    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+    " 'add to bag')]"
+)
+
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))
+PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -45,7 +48,7 @@ def send_pushover(msg: str):
     try:
         r = requests.post(
             "https://api.pushover.net/1/messages.json",
-            data={"token":PUSH_TOKEN, "user":PUSH_KEY, "message":msg},
+            data={"token":PUSH_TOKEN,"user":PUSH_KEY,"message":msg},
             timeout=10
         )
         r.raise_for_status()
@@ -56,40 +59,38 @@ def send_pushover(msg: str):
 # ─── STOCK CHECK ───────────────────────────────────────────────────────────────
 def check_stock(url: str):
     logging.info(f"→ START {url}")
-    chrome_opts = Options()
-    chrome_opts.add_argument("--headless")
-    chrome_opts.add_argument("--no-sandbox")
-    chrome_opts.add_argument("--disable-dev-shm-usage")
-    chrome_opts.page_load_strategy = "eager"
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.page_load_strategy = "eager"
 
-    service = Service(os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
-    driver  = webdriver.Chrome(service=service, options=chrome_opts)
+    service = Service(os.getenv("CHROMEDRIVER_PATH","/usr/bin/chromedriver"))
+    driver  = webdriver.Chrome(service=service, options=opts)
     driver.set_page_load_timeout(PAGE_TIMEOUT)
 
     try:
         try:
             driver.get(url)
         except TimeoutException:
-            logging.warning(f"⚠️  Page-load timeout, continuing: {url}")
+            logging.warning(f"⚠️ Page-load timeout; proceeding anyway: {url}")
 
-        time.sleep(3)  # allow JS & overlay to appear
+        time.sleep(3)  # allow JS & overlay
 
-        # dismiss T&C overlay if present
-        overlays = driver.find_elements(
-            By.XPATH, "//div[contains(@class,'policy_acceptBtn')]"
-        )
-        if overlays:
-            overlays[0].click()
-            logging.info("✓ Accepted T&C overlay")
+        # dismiss any T&C overlay
+        els = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
+        if els:
+            els[0].click()
+            logging.info("✓ Accepted overlay")
             time.sleep(1)
 
-        # look for “add to bag”
+        # look for add-to-bag anywhere on the page
         if STOCK_SELECTOR.startswith("//"):
-            elems = driver.find_elements(By.XPATH, STOCK_SELECTOR)
+            found = driver.find_elements(By.XPATH, STOCK_SELECTOR)
         else:
-            elems = driver.find_elements(By.CSS_SELECTOR, STOCK_SELECTOR)
+            found = driver.find_elements(By.CSS_SELECTOR, STOCK_SELECTOR)
 
-        if elems:
+        if found:
             msg = f"[{datetime.now():%H:%M}] IN STOCK → {url}"
             logging.info(msg)
             send_pushover(msg)
@@ -105,11 +106,10 @@ def check_stock(url: str):
 # ─── MAIN LOOP ────────────────────────────────────────────────────────────────
 def main():
     if not PRODUCT_URLS:
-        logging.error("No PRODUCT_URLS set in env")
-        return
+        logging.error("No PRODUCT_URLS set in env"); return
 
     start_health_server()
-    # align to next minute boundary
+    # align to next minute
     time.sleep(CHECK_INTERVAL - (time.time() % CHECK_INTERVAL))
 
     while True:
