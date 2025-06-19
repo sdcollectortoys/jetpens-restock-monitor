@@ -11,20 +11,21 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-PORT            = int(os.getenv("PORT", "8000"))
+PORT            = int(os.getenv("PORT",           "8000"))
 PUSH_KEY        = os.getenv("PUSHOVER_USER_KEY")
 PUSH_TOKEN      = os.getenv("PUSHOVER_API_TOKEN")
 PRODUCT_URLS    = [u.strip() for u in os.getenv("PRODUCT_URLS","").split(",") if u.strip()]
 
-# If you’ve removed STOCK_SELECTOR from env, this default will be used:
+# Default XPath: match ANY element containing “add to bag” (case-insensitive)
 STOCK_SELECTOR = os.getenv("STOCK_SELECTOR",
     "//*[contains(translate(normalize-space(.),"
     " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
     " 'add to bag')]"
 )
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # secs
-PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # secs to load page
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # seconds between cycles
+PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # max seconds to load page
+WAIT_BEFORE    = 3    # seconds after load for JS & overlays
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -43,7 +44,7 @@ def start_health_server():
 # ─── PUSHOVER ──────────────────────────────────────────────────────────────────
 def send_pushover(msg: str):
     if not (PUSH_KEY and PUSH_TOKEN):
-        logging.warning("Missing Pushover keys; skipping")
+        logging.warning("Missing Pushover keys; skipping alert")
         return
     try:
         r = requests.post(
@@ -61,9 +62,8 @@ def check_stock(url: str):
     logging.info(f"→ START {url}")
 
     opts = Options()
-    opts.add_argument("--headless")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
+    for a in ("--headless","--no-sandbox","--disable-dev-shm-usage"):
+        opts.add_argument(a)
     opts.page_load_strategy = "eager"
 
     service = Service(os.getenv("CHROMEDRIVER_PATH","/usr/bin/chromedriver"))
@@ -71,29 +71,38 @@ def check_stock(url: str):
     driver.set_page_load_timeout(PAGE_TIMEOUT)
 
     try:
-        # 1) load the page
+        # 1) load page
         try:
             driver.get(url)
         except TimeoutException:
-            logging.warning(f"⚠️  Page-load timeout; proceeding: {url}")
+            logging.warning(f"⚠️ Page-load timeout; proceeding anyway")
 
-        # 2) wait a moment for JS & overlays
-        time.sleep(3)
+        time.sleep(WAIT_BEFORE)
 
-        # 3) dismiss any “Notify me” overlay
-        overlay = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
-        if overlay:
-            overlay[0].click()
-            logging.info("✓ Accepted T&C overlay")
+        # 2) dismiss any overlay
+        ov = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
+        if ov:
+            ov[0].click()
+            logging.info("✓ Accepted overlay")
             time.sleep(1)
 
-        # 4) DEBUG: find all matches for STOCK_SELECTOR
+        # ── DEBUG #1: raw page_source check
+        html = driver.page_source
+        lower = html.lower()
+        contains = "add to bag" in lower
+        logging.info(f"   debug: page_source contains 'add to bag'? {contains}")
+        if contains:
+            idx = lower.find("add to bag")
+            snippet = html[max(0, idx-80): idx+80].replace("\n"," ")
+            logging.info(f"   debug snippet: …{snippet}…")
+
+        # ── DEBUG #2: XPath element matches
         elems = driver.find_elements(By.XPATH, STOCK_SELECTOR)
         logging.info(f"   debug: STOCK_SELECTOR={STOCK_SELECTOR!r} matched {len(elems)} element(s)")
         for e in elems:
             logging.info(f"      → tag={e.tag_name!r}, text={e.text!r}")
 
-        # 5) alert if any found
+        # ── alert logic
         if elems:
             msg = f"[{datetime.now():%H:%M}] IN STOCK → {url}"
             logging.info(msg)
@@ -110,11 +119,10 @@ def check_stock(url: str):
 # ─── MAIN LOOP ────────────────────────────────────────────────────────────────
 def main():
     if not PRODUCT_URLS:
-        logging.error("No PRODUCT_URLS set in env")
-        return
+        logging.error("No PRODUCT_URLS set in env"); return
 
     start_health_server()
-    # align to next minute
+    # align start
     time.sleep(CHECK_INTERVAL - (time.time() % CHECK_INTERVAL))
 
     while True:
