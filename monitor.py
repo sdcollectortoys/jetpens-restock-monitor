@@ -8,8 +8,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -18,16 +16,15 @@ PUSH_KEY        = os.getenv("PUSHOVER_USER_KEY")
 PUSH_TOKEN      = os.getenv("PUSHOVER_API_TOKEN")
 PRODUCT_URLS    = [u.strip() for u in os.getenv("PRODUCT_URLS","").split(",") if u.strip()]
 
-# match ANY element containing “add to bag” (case-insensitive)
+# If you’ve removed STOCK_SELECTOR from env, this default will be used:
 STOCK_SELECTOR = os.getenv("STOCK_SELECTOR",
-    "//*[contains(translate(normalize-space(.), "
-    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
+    "//*[contains(translate(normalize-space(.),"
+    " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
     " 'add to bag')]"
 )
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # seconds between cycles
-PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # max seconds to load page
-WAIT_TIMEOUT   = int(os.getenv("WAIT_TIMEOUT","10"))    # seconds to wait for button
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # secs
+PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # secs to load page
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -46,12 +43,12 @@ def start_health_server():
 # ─── PUSHOVER ──────────────────────────────────────────────────────────────────
 def send_pushover(msg: str):
     if not (PUSH_KEY and PUSH_TOKEN):
-        logging.warning("Pushover keys missing; skipping")
+        logging.warning("Missing Pushover keys; skipping")
         return
     try:
         r = requests.post(
             "https://api.pushover.net/1/messages.json",
-            data={"token":PUSH_TOKEN,"user":PUSH_KEY,"message":msg},
+            data={"token":PUSH_TOKEN, "user":PUSH_KEY, "message":msg},
             timeout=10
         )
         r.raise_for_status()
@@ -59,47 +56,49 @@ def send_pushover(msg: str):
     except Exception as e:
         logging.error("Pushover error: %s", e)
 
-# ─── STOCK CHECK ───────────────────────────────────────────────────────────────
+# ─── SINGLE CHECK ──────────────────────────────────────────────────────────────
 def check_stock(url: str):
     logging.info(f"→ START {url}")
 
-    # set up headless Chrome
     opts = Options()
     opts.add_argument("--headless")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.page_load_strategy = "eager"
 
-    service = Service(os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
+    service = Service(os.getenv("CHROMEDRIVER_PATH","/usr/bin/chromedriver"))
     driver  = webdriver.Chrome(service=service, options=opts)
     driver.set_page_load_timeout(PAGE_TIMEOUT)
 
     try:
-        # load page
+        # 1) load the page
         try:
             driver.get(url)
         except TimeoutException:
-            logging.warning(f"⚠️ Page load timed out; proceeding anyway: {url}")
+            logging.warning(f"⚠️  Page-load timeout; proceeding: {url}")
 
-        # dismiss any overlay
-        els = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
-        if els:
-            els[0].click()
+        # 2) wait a moment for JS & overlays
+        time.sleep(3)
+
+        # 3) dismiss any “Notify me” overlay
+        overlay = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
+        if overlay:
+            overlay[0].click()
             logging.info("✓ Accepted T&C overlay")
             time.sleep(1)
 
-        # now wait up to WAIT_TIMEOUT for an “add to bag” match
-        try:
-            WebDriverWait(driver, WAIT_TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, STOCK_SELECTOR))
-            )
-            # if we get here, element is present
+        # 4) DEBUG: find all matches for STOCK_SELECTOR
+        elems = driver.find_elements(By.XPATH, STOCK_SELECTOR)
+        logging.info(f"   debug: STOCK_SELECTOR={STOCK_SELECTOR!r} matched {len(elems)} element(s)")
+        for e in elems:
+            logging.info(f"      → tag={e.tag_name!r}, text={e.text!r}")
+
+        # 5) alert if any found
+        if elems:
             msg = f"[{datetime.now():%H:%M}] IN STOCK → {url}"
             logging.info(msg)
             send_pushover(msg)
-
-        except TimeoutException:
-            # not found within WAIT_TIMEOUT
+        else:
             logging.info("   out of stock")
 
     except Exception:
@@ -123,7 +122,6 @@ def main():
         for u in PRODUCT_URLS:
             check_stock(u)
         logging.info("✅ Cycle END")
-        # sleep until top of next minute
         time.sleep(CHECK_INTERVAL - (time.time() % CHECK_INTERVAL))
 
 if __name__ == "__main__":
