@@ -1,139 +1,137 @@
 #!/usr/bin/env python3
-import os, time, threading, logging
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException
+import os
+import sys
+import time
+import threading
+import logging
 import requests
+from bs4 import BeautifulSoup
+from flask import Flask, Response
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-PORT            = int(os.getenv("PORT",           "8000"))
-PUSH_KEY        = os.getenv("PUSHOVER_USER_KEY")
-PUSH_TOKEN      = os.getenv("PUSHOVER_API_TOKEN")
-PRODUCT_URLS    = [u.strip() for u in os.getenv("PRODUCT_URLS","").split(",") if u.strip()]
-
-# Default XPath to catch ANY element whose *normalized* text contains “add to bag”
-STOCK_SELECTOR = os.getenv("STOCK_SELECTOR",
-    "//*[contains(translate(normalize-space(.),"
-    " 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),"
-    " 'add to bag')]"
+# ----------------------
+# Logging configuration
+# ----------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL","60"))  # seconds
-PAGE_TIMEOUT   = int(os.getenv("PAGE_TIMEOUT","15"))    # seconds to load page
-WAIT_BEFORE    = 3                                      # seconds after load
+# ----------------------
+# Load Pushover creds
+# ----------------------
+PUSHOVER_API_TOKEN = os.environ.get("PUSHOVER_API_TOKEN")
+PUSHOVER_USER_KEY   = os.environ.get("PUSHOVER_USER_KEY")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+if not PUSHOVER_API_TOKEN or not PUSHOVER_USER_KEY:
+    logging.error("Missing PUSHOVER_API_TOKEN or PUSHOVER_USER_KEY in environment; exiting.")
+    sys.exit(1)
 
-# ─── HEALTH CHECK ──────────────────────────────────────────────────────────────
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-    def do_HEAD(self):
-        self.send_response(200); self.end_headers()
+# ----------------------
+# Load product URLs
+# ----------------------
+raw = os.environ.get("PRODUCT_URLS", "").strip()
+if raw:
+    PRODUCT_URLS = [u.strip() for u in raw.split(",") if u.strip()]
+else:
+    logging.warning("No PRODUCT_URLS set in env; falling back to built-in URLs")
+    PRODUCT_URLS = [
+        "https://www.jetpens.com/Uni-ball-ZENTO-Gel-Pen-Signature-Model-0.5-mm-Metallic-Black-Body-Black-Ink/pd/45351",
+        "https://www.jetpens.com/Uni-ball-ZENTO-Gel-Pen-Signature-Model-0.38-mm-Silver-Body-Black-Ink/pd/45350"
+    ]
 
-def start_health_server():
-    srv = HTTPServer(("", PORT), HealthHandler)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    logging.info(f"Health check on port {PORT}")
+if not PRODUCT_URLS:
+    logging.error("No URLs to monitor (neither PRODUCT_URLS nor defaults present). Exiting.")
+    sys.exit(1)
 
-# ─── PUSHOVER ──────────────────────────────────────────────────────────────────
-def send_pushover(msg: str):
-    if not (PUSH_KEY and PUSH_TOKEN):
-        logging.warning("Missing Pushover keys; skipping alert")
-        return
+logging.info("→ Monitoring these URLs:\n  " + "\n  ".join(PRODUCT_URLS))
+
+# ----------------------
+# Pushover helper
+# ----------------------
+def send_notification(title: str, message: str):
+    payload = {
+        "token":   PUSHOVER_API_TOKEN,
+        "user":    PUSHOVER_USER_KEY,
+        "title":   title,
+        "message": message
+    }
     try:
-        r = requests.post(
-            "https://api.pushover.net/1/messages.json",
-            data={"token":PUSH_TOKEN, "user":PUSH_KEY, "message":msg},
-            timeout=10
-        )
+        r = requests.post("https://api.pushover.net/1/messages.json", data=payload, timeout=10)
         r.raise_for_status()
-        logging.info("✔️ Pushover sent")
+        logging.info("Pushover notification sent")
     except Exception as e:
-        logging.error("Pushover error: %s", e)
+        logging.error(f"Failed to send Pushover notification: {e}")
 
-# ─── SINGLE CHECK ──────────────────────────────────────────────────────────────
-def check_stock(url: str):
-    logging.info(f"→ START {url}")
-
-    # configure headless Chrome
-    opts = Options()
-    for arg in ("--headless","--no-sandbox","--disable-dev-shm-usage"):
-        opts.add_argument(arg)
-    opts.page_load_strategy = "eager"
-    service = Service(os.getenv("CHROMEDRIVER_PATH","/usr/bin/chromedriver"))
-    driver  = webdriver.Chrome(service=service, options=opts)
-    driver.set_page_load_timeout(PAGE_TIMEOUT)
-
+# ----------------------
+# Stock checker
+# ----------------------
+def check_stock(url: str) -> bool:
+    """Return True if the page shows an 'Add to Cart' button, else False."""
     try:
-        # load
-        try:
-            driver.get(url)
-        except TimeoutException:
-            logging.warning("⚠️ Page-load timeout; proceeding anyway")
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+    except Exception as e:
+        logging.error(f"[{url}] Error fetching page: {e}")
+        return False
 
-        time.sleep(WAIT_BEFORE)
+    soup = BeautifulSoup(r.text, "html.parser")
+    # JetPens uses <input class="add-to-cart" value="Add to Cart">
+    btn = soup.find("input", {
+        "class": "add-to-cart",
+        "type":  "submit",
+        "value": "Add to Cart"
+    })
+    return bool(btn)
 
-        # dismiss overlay
-        ov = driver.find_elements(By.XPATH, "//div[contains(@class,'policy_acceptBtn')]")
-        if ov:
-            ov[0].click()
-            logging.info("✓ Accepted overlay")
-            time.sleep(1)
+# ----------------------
+# Monitor loop
+# ----------------------
+last_status = {}  # url -> bool
 
-        # grab raw HTML and normalize
-        raw = driver.page_source
-        norm = raw.replace('\u00A0',' ').lower()
+def monitor_cycle():
+    logging.info("🔄 Cycle START")
+    for url in PRODUCT_URLS:
+        logging.info(f"→ START {url}")
+        in_stock = check_stock(url)
+        prev = last_status.get(url, False)
 
-        # DEBUG #1: raw HTML check
-        has_substr = 'add to bag' in norm
-        logging.info(f"   debug: raw HTML contains 'add to bag'? {has_substr}")
-        if has_substr:
-            idx = norm.find('add to bag')
-            snippet = norm[max(0, idx-60): idx+60].replace('\n',' ')
-            logging.info(f"   debug snippet: …{snippet}…")
-
-        # DEBUG #2: XPath matches
-        elems = driver.find_elements(By.XPATH, STOCK_SELECTOR)
-        logging.info(f"   debug: STOCK_SELECTOR={STOCK_SELECTOR!r} matched {len(elems)} element(s)")
-        for e in elems:
-            logging.info(f"      → tag={e.tag_name!r}, text={e.text!r}")
-
-        # final decision
-        if elems:
-            msg = f"[{datetime.now():%H:%M}] IN STOCK → {url}"
-            logging.info(msg)
-            send_pushover(msg)
+        if in_stock:
+            logging.info(f"[{url}] in stock")
+            if not prev:
+                # only notify when it newly comes in-stock
+                send_notification("🔔 Back in stock!", url)
         else:
-            logging.info("   out of stock")
+            logging.info(f"[{url}] out of stock")
 
-    except Exception:
-        logging.exception(f"Error on {url}")
-    finally:
-        driver.quit()
-        logging.info(f"← END   {url}")
+        last_status[url] = in_stock
 
-# ─── MAIN LOOP ────────────────────────────────────────────────────────────────
-def main():
-    if not PRODUCT_URLS:
-        logging.error("No PRODUCT_URLS set in env")
-        return
+    logging.info("✅ Cycle END")
 
-    start_health_server()
-    # align to next minute
-    time.sleep(CHECK_INTERVAL - (time.time() % CHECK_INTERVAL))
-
+def scheduler():
+    # run one immediately
+    monitor_cycle()
     while True:
-        logging.info("🔄 Cycle START")
-        for u in PRODUCT_URLS:
-            check_stock(u)
-        logging.info("✅ Cycle END")
-        time.sleep(CHECK_INTERVAL - (time.time() % CHECK_INTERVAL))
+        # sleep until the top of the next minute
+        now = time.time()
+        delay = 60 - (now % 60)
+        time.sleep(delay)
+        monitor_cycle()
+
+# ----------------------
+# Flask health check
+# ----------------------
+app = Flask(__name__)
+
+@app.route("/health")
+def health():
+    return Response("OK", status=200)
 
 if __name__ == "__main__":
-    main()
+    # spawn the monitor thread
+    t = threading.Thread(target=scheduler, daemon=True)
+    t.start()
+
+    logging.info("Health server listening on 0.0.0.0:8000/health")
+    # Note: Flask's built-in server is fine for this; UptimeRobot will ping /health.
+    app.run(host="0.0.0.0", port=8000)
