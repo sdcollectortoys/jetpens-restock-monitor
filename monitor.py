@@ -4,13 +4,13 @@ import sys
 import time
 import logging
 import threading
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from flask import Flask, Response
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-# comma-separated list in your Render env
+# comma-separated list of product URLs in your Render env
 PRODUCT_URLS = os.getenv("PRODUCT_URLS", "").split(",")
 
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
@@ -18,7 +18,7 @@ PUSHOVER_USER_KEY   = os.getenv("PUSHOVER_USER_KEY")
 
 SLEEP_INTERVAL = 60  # seconds
 
-# ─── Validation ────────────────────────────────────────────────────────────────
+# ─── Validation ───────────────────────────────────────────────────────────────
 
 if not PRODUCT_URLS or PRODUCT_URLS == [""]:
     logging.error("No PRODUCT_URLS set in env")
@@ -62,38 +62,37 @@ def send_push(title: str, message: str) -> None:
 
 # ─── Stock check ──────────────────────────────────────────────────────────────
 
-session = requests.Session()
+# cloudscraper can solve basic Cloudflare JS challenges
+scraper = cloudscraper.create_scraper(
+    browser={
+        "custom": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/115.0.0.0 Safari/537.36"
+    }
+)
 
 COMMON_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/115.0.0.0 Safari/537.36"
-    ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/webp,image/apng,*/*;q=0.8"
+        "q=0.9,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
     "Referer": "https://www.jetpens.com/",
     "Origin":  "https://www.jetpens.com",
+    # cloudscraper will fill in the rest for you
 }
 
 def check_stock(url: str) -> bool:
     """
-    Checks whether an "Add to Cart" button is present.
-    Returns True if so, False otherwise.
+    Returns True if "Add to Cart" button is present, False otherwise.
     """
     try:
-        r = session.get(url, headers=COMMON_HEADERS, timeout=20)
+        r = scraper.get(url, headers=COMMON_HEADERS, timeout=20)
         if r.status_code == 403:
-            logging.warning(f"[{url}] 403 Forbidden – likely bot‐blocked")
+            logging.warning(f"[{url}] 403 Forbidden – still blocked")
             return False
         r.raise_for_status()
-    except requests.RequestException as e:
+    except Exception as e:
         logging.error(f"[{url}] Error fetching page: {e}")
         return False
 
@@ -108,7 +107,7 @@ def check_stock(url: str) -> bool:
 
 def monitor_loop():
     last_state = {url: False for url in PRODUCT_URLS}
-    # align to top of minute
+    # align to the top of the next minute
     time.sleep(SLEEP_INTERVAL - (time.time() % SLEEP_INTERVAL))
 
     while True:
@@ -117,11 +116,11 @@ def monitor_loop():
             logging.info(f"→ START {url}")
             in_stock = check_stock(url)
 
-            # on False→True only
+            # notify on the *first* time we see it in stock
             if in_stock and not last_state[url]:
                 send_push("In Stock!", url)
 
-            # log transition to out‐of‐stock
+            # log transitions
             if not in_stock and last_state[url]:
                 logging.info(f"[{url}] went out of stock")
 
@@ -136,6 +135,8 @@ def monitor_loop():
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import requests  # needed for Pushover
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
